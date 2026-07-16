@@ -7,6 +7,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
@@ -14,6 +16,7 @@ const { seal, open } = require('./envelope');
 const { decryptSecretBlob, signKmsRequest, maskLines } = require('./fetch-and-decrypt');
 
 const FETCH = path.join(__dirname, 'fetch-and-decrypt.js');
+const SECRET_TOOL = path.join(__dirname, 'secret-tool.js');
 
 // One 2048-bit keypair for the whole suite (small key on purpose — proves the
 // hybrid scheme is not bound by the RSA size limit).
@@ -39,6 +42,27 @@ test('the action runtime decrypts exactly what seal produces (no drift)', () => 
   const obj = { A: 'one', B: 'two' };
   const token = seal(publicKey, obj);
   assert.deepStrictEqual(decryptSecretBlob(privateKey, 'secret', token), obj);
+});
+
+test('the action runtime decrypts ops CLI output without data drift', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kms-compat-'));
+  const publicKeyPath = path.join(dir, 'kms-encrypt-public.pem');
+  const obj = {
+    KMS_POC_MARKER: 'app-monorepo-kms-poc-v1',
+    MULTILINE_VALUE: 'line one\nline two',
+  };
+
+  try {
+    fs.writeFileSync(publicKeyPath, publicKey);
+    const encrypted = spawnSync(process.execPath, [SECRET_TOOL, 'encrypt', publicKeyPath], {
+      input: JSON.stringify(obj),
+      encoding: 'utf8',
+    });
+    assert.strictEqual(encrypted.status, 0, encrypted.stderr);
+    assert.deepStrictEqual(decryptSecretBlob(privateKey, 'ops-cli-fixture', encrypted.stdout.trim()), obj);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('big payload (~5 KB) round-trips on a 2048-bit key', () => {
